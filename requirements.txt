@@ -1,0 +1,21 @@
+# Le Mans Ultimate Fuel Monitor - Dependencias
+
+# Este proyecto usa solo librerías estándar de Python
+# No requiere instalación de paquetes adicionales
+
+# Librerías utilizadas (todas estándar):
+# - struct: Para lectura de datos binarios de memoria compartida
+# - mmap: Para acceso a memoria compartida
+# - time: Para temporización
+# - dataclasses: Para estructuras de datos
+# - typing: Para type hints
+# - os: Para operaciones del sistema
+# - sys: Para operaciones del sistema
+# - random: Para simulaciones (solo en test_simulation.py)
+
+# Versión mínima de Python requerida: 3.8+
+
+# Para instalar Python (si no lo tienes):
+# Windows: https://www.python.org/downloads/
+# Linux: sudo apt-get install python3
+# macOS: brew install python3
