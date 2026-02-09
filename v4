@@ -1,45 +1,69 @@
-import urllib.request
-import json
-import time
+import mmap
+import struct
 
-URL = "http://127.0.0.1:8888/api/getgamedata"
-
-def buscar_datos_ocultos():
-    print(f"--- DETECTIVE DE DATOS SIMHUB ---")
-    print(f"Leyendo {URL}...")
-    print("ACELERA EL COCHE para que los valores cambien.")
-
+def buscar_aguja_en_pajar():
+    print("--- BUSCADOR DE OFFSET DE COMBUSTIBLE ---")
+    print("Este script escaneará la memoria buscando el valor exacto que ves en SimHub.")
+    
+    # 1. Preguntamos al usuario qué valor buscar
     try:
-        with urllib.request.urlopen(URL, timeout=1) as response:
-            if response.getcode() == 200:
-                raw_json = response.read().decode()
-                data = json.loads(raw_json)
-                
-                print("\n✅ CONEXIÓN EXITOSA. Buscando datos válidos...\n")
-                
-                encontrados = 0
-                print("-" * 60)
-                print(f"{'NOMBRE DE LA VARIABLE':<30} | {'VALOR':<20}")
-                print("-" * 60)
-                
-                # Recorremos TODAS las variables que nos da SimHub
-                for key, value in data.items():
-                    # Filtramos solo números que sean mayores que 0 (para quitar basura)
-                    if isinstance(value, (int, float)) and value > 0:
-                        # Filtros para no llenar la pantalla de cosas irrelevantes
-                        if "Time" not in key and "Date" not in key:
-                            print(f"{key:<30} | {value}")
-                            encontrados += 1
-                
-                print("-" * 60)
-                if encontrados == 0:
-                    print("❌ INCREÍBLE: SimHub dice que todo es 0. ¿Seguro que las agujas se mueven?")
-                else:
-                    print(f"💡 Encontrados {encontrados} datos. Busca 'Fuel' o 'Rpms' arriba.")
-                    print("Usa el nombre EXACTO que ves a la izquierda en tu script final.")
+        target_str = input("\nIntroduce los LITROS exactos que ves en SimHub (ej. 92.8): ")
+        target_val = float(target_str.replace(',', '.')) # Aceptamos coma o punto
+    except ValueError:
+        print("❌ Por favor, introduce un número válido.")
+        return
 
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
+    print(f"\n🔍 Buscando el valor {target_val} (+/- 0.1) en la memoria...")
+
+    # Lista de mapas donde SimHub suele escribir
+    mapas = ["$rFactor2Shared$", "$rFactor2SMMP_Telemetry$", "Local\\$rFactor2Shared$"]
+    
+    encontrado_algo = False
+
+    for nombre_mapa in mapas:
+        try:
+            shmem = mmap.mmap(-1, 64000, nombre_mapa, access=mmap.ACCESS_READ)
+            shmem.seek(0)
+            data = shmem.read(64000) # Leemos todo el bloque de golpe
+            
+            print(f"   📂 Analizando mapa: {nombre_mapa}...")
+            
+            # Escaneamos byte a byte (esto es fuerza bruta)
+            # El combustible es un 'double' (8 bytes) o 'float' (4 bytes)
+            
+            for i in range(0, 500, 4): # Buscamos solo en los primeros 500 bytes para no tardar
+                try:
+                    # Prueba 1: ¿Es un Double (8 bytes)? (Formato standard rFactor2)
+                    val_double = struct.unpack('d', data[i:i+8])[0]
+                    if abs(val_double - target_val) < 0.1: # Margen de error pequeño
+                        print(f"\n✅ ¡EUREKA! Encontrado (Double) en offset {i}")
+                        print(f"   -> Mapa: {nombre_mapa}")
+                        print(f"   -> Valor en memoria: {val_double:.4f}")
+                        print(f"   -> SOLUCIÓN: En tu script, cambia el offset de Fuel a {i}")
+                        encontrado_algo = True
+                        
+                    # Prueba 2: ¿Es un Float (4 bytes)? (Formato antiguo o UDP convertido)
+                    val_float = struct.unpack('f', data[i:i+4])[0]
+                    if abs(val_float - target_val) < 0.1:
+                        print(f"\n✅ ¡EUREKA! Encontrado (Float) en offset {i}")
+                        print(f"   -> Mapa: {nombre_mapa}")
+                        print(f"   -> Valor en memoria: {val_float:.4f}")
+                        print(f"   -> SOLUCIÓN: Es un float en offset {i}")
+                        encontrado_algo = True
+                        
+                except:
+                    pass
+            
+            shmem.close()
+            
+        except FileNotFoundError:
+            pass
+
+    if not encontrado_algo:
+        print("\n❌ No se encontró el valor.")
+        print("   1. Asegúrate de poner el número EXACTO (con decimales).")
+        print("   2. Asegúrate de ejecutar este script como ADMINISTRADOR.")
+        print("   3. Si SimHub ve 92.8, prueba a buscar 92.0 o 93.0 por si redondea.")
 
 if __name__ == "__main__":
-    buscar_datos_ocultos()
+    buscar_aguja_en_pajar()
