@@ -2,63 +2,71 @@ import mmap
 import struct
 import time
 
-def escanear_memoria_v2():
-    print("--- ESCÁNER DE MEMORIA V2 (MODO ADMINISTRADOR) ---")
+def escanner_total():
+    print("--- BUSCADOR DE SEÑAL LMU ---")
     
+    # LISTA COMPLETA de todos los nombres posibles que usa el plugin en 2024/2025
     posibles_nombres = [
+        "$rFactor2SMMP_Telemetry$",   # <--- La más probable en versiones nuevas
+        "$rFactor2SMMP_Scoring$",
+        "$rFactor2Shared$",           # La clásica
+        "$rFactor2Extended$",
+        "Local\\$rFactor2SMMP_Telemetry$",
+        "Global\\$rFactor2SMMP_Telemetry$",
         "Local\\$rFactor2Shared$",
-        "Global\\$rFactor2Shared$",
-        "$rFactor2Shared$",
-        "Local\\$rFactor2Extended$"
+        "Global\\$rFactor2Shared$"
     ]
 
-    encontrado = False
+    mapas_vivos = []
 
+    print("1. Buscando canales activos...")
     for nombre in posibles_nombres:
         try:
-            # Intentamos abrir
+            # Intentamos abrir sin crear (si falla, es que no existe)
             shmem = mmap.mmap(-1, 16000, nombre, access=mmap.ACCESS_READ)
             
-            # Leemos para ver si hay ceros o datos
+            # Leemos para ver si hay vida (no solo ceros)
             shmem.seek(0)
-            data = shmem.read(64)
+            data = shmem.read(100)
             es_cero = all(b == 0 for b in data)
             
             if not es_cero:
-                print(f"✅ ¡EUREKA! Datos encontrados en: '{nombre}'")
-                print("   -> Usa este nombre exacto en tu script final.")
-                encontrado = True
-                
-                # Bucle de visualización
-                try:
-                    while True:
-                        shmem.seek(0)
-                        # Leemos un bloque donde suele estar el Fuel/RPM
-                        bloque = shmem.read(100)
-                        
-                        # Decodificamos RPM (offset aprox 12-20) y Fuel (offset aprox 84)
-                        # Nota: Esto es aproximado solo para ver que cambia
-                        rpm = struct.unpack('d', bloque[12:20])[0] # Versión Standard
-                        fuel = struct.unpack('d', bloque[84:92])[0]
-                        
-                        print(f"\r🔥 RPM: {rpm:.0f} | Fuel: {fuel:.2f}", end="")
-                        time.sleep(0.1)
-                except KeyboardInterrupt:
-                    return
+                print(f"   ✅ ¡BINGO! Datos detectados en: '{nombre}'")
+                mapas_vivos.append((nombre, shmem))
             else:
-                print(f"⚠️  Conectado a '{nombre}' pero está VACÍO (Ceros).")
+                # Si conecta pero está vacío, lo ignoramos (es el señuelo)
                 shmem.close()
+                print(f"   ⚠️  Encontrado '{nombre}' pero está VACÍO (Señuelo).")
 
         except FileNotFoundError:
-            # print(f"   No existe: {nombre}")
             pass
         except PermissionError:
-            print(f"⛔ PERMISO DENEGADO en '{nombre}'. ¡Ejecuta Python como Administrador!")
+            print(f"   ⛔ Permiso denegado en '{nombre}' (Ejecuta como Admin)")
 
-    if not encontrado:
-        print("\n❌ RESUMEN: O no hay permisos, o SimHub está bloqueando el archivo.")
-        print("   Intento 1: Cierra SimHub y prueba solo con el juego.")
-        print("   Intento 2: Ejecuta VS Code como ADMINISTRADOR.")
+    if not mapas_vivos:
+        print("\n❌ NO SE ENCONTRÓ NADA. Asegúrate de que SimHub sigue moviendo las agujas.")
+        return
+
+    print("\n2. Mostrando datos del canal ganador:")
+    nombre_ganador, shmem_ganadora = mapas_vivos[0]
+    
+    try:
+        while True:
+            shmem_ganadora.seek(0)
+            # Leemos un bloque grande para asegurar
+            buff = shmem_ganadora.read(64)
+            
+            # Interpretación rápida (intentamos adivinar RPM y Fuel en varios offsets)
+            # Offset 0 suele ser ID, Offset 4 o 8 suele ser RPM/Velocidad dependiendo de la versión
+            
+            # Mostramos los bytes crudos para confirmar visualmente
+            hex_data = buff[:16].hex()
+            
+            print(f"\r📡 [{nombre_ganador}] HEX: {hex_data} ...", end="")
+            time.sleep(0.1)
+            
+    except KeyboardInterrupt:
+        print("\nListo. Usa ese nombre en tu script final.")
 
 if __name__ == "__main__":
-    escanear_memoria_v2()
+    escanner_total()
