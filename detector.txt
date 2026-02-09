@@ -1,0 +1,35 @@
+import mmap
+import struct
+import time
+
+try:
+    print("Buscando memoria compartida...")
+    # LMU usa el mapa estándar de rFactor2
+    shmem = mmap.mmap(-1, 64000, "$rFactor2Shared$")
+    
+    print("✅ ¡Memoria encontrada! Leyendo datos...")
+    
+    while True:
+        shmem.seek(0)
+        # Leemos bytes crudos
+        data = shmem.read(100)
+        
+        # Leemos RPM (Offset 20 en pack 8, Offset 12 en pack 4)
+        # Probamos ambos por si acaso
+        rpm_v1 = struct.unpack('d', data[12:20])[0] # Pack 4
+        rpm_v2 = struct.unpack('d', data[20:28])[0] # Pack 8
+        
+        fuel_byte = data[84:92] # Zona probable de fuel
+        fuel_val = struct.unpack('d', fuel_byte)[0]
+
+        if rpm_v1 > 10 or rpm_v2 > 10:
+            print(f"🔥 DATOS VIVOS! -> RPM: {max(rpm_v1, rpm_v2):.1f} | Fuel Raw: {fuel_val:.2f}")
+        else:
+            print(f"❄️ Ceros... (Acelera el coche) -> Raw bytes: {data[0:10].hex()}")
+            
+        time.sleep(0.5)
+
+except FileNotFoundError:
+    print("❌ ERROR: El juego NO ha creado el archivo de memoria.")
+    print("   -> Verifica que el plugin está en la carpeta 'Plugins' (RAÍZ).")
+    print("   -> Verifica que CustomPluginVariables.json tiene 'Enabled': 1")
