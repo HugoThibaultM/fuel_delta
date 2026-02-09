@@ -1,69 +1,63 @@
-import mmap
-import struct
+import urllib.request
+import json
+import time
 
-def buscar_aguja_en_pajar():
-    print("--- BUSCADOR DE OFFSET DE COMBUSTIBLE ---")
-    print("Este script escaneará la memoria buscando el valor exacto que ves en SimHub.")
+# URL de SimHub
+URL = "http://127.0.0.1:8888/api/getgamedata"
+
+def rastrear_valor_profundo(data, objetivo, ruta_actual=""):
+    """Busca recursivamente un valor numérico dentro del JSON de SimHub"""
+    found_paths = []
     
-    # 1. Preguntamos al usuario qué valor buscar
+    if isinstance(data, dict):
+        for k, v in data.items():
+            nuevaruta = f"{ruta_actual}.{k}" if ruta_actual else k
+            found_paths.extend(rastrear_valor_profundo(v, objetivo, nuevaruta))
+    elif isinstance(data, list):
+        for i, v in enumerate(data):
+            nuevaruta = f"{ruta_actual}[{i}]"
+            found_paths.extend(rastrear_valor_profundo(v, objetivo, nuevaruta))
+    elif isinstance(data, (int, float)):
+        # Comparamos con un margen de error pequeño (0.1)
+        if abs(data - objetivo) < 0.1:
+            found_paths.append((ruta_actual, data))
+            
+    return found_paths
+
+def main():
+    print("--- RASTREADOR PROFUNDO DE SIMHUB ---")
+    print("Este script preguntará a SimHub dónde tiene escondido el dato.")
+    
     try:
-        target_str = input("\nIntroduce los LITROS exactos que ves en SimHub (ej. 92.8): ")
-        target_val = float(target_str.replace(',', '.')) # Aceptamos coma o punto
+        objetivo_str = input("\nIntroduce los LITROS que ves en SimHub (ej. 92.8): ")
+        objetivo = float(objetivo_str.replace(',', '.'))
+        print(f"⏳ Preguntando a SimHub por el valor {objetivo}...")
+        
+        with urllib.request.urlopen(URL, timeout=2) as response:
+            if response.getcode() == 200:
+                raw_json = response.read().decode()
+                data = json.loads(raw_json)
+                
+                # Buscamos en todo el árbol de datos
+                resultados = rastrear_valor_profundo(data, objetivo)
+                
+                if resultados:
+                    print("\n✅ ¡ENCONTRADO! SimHub guarda ese dato aquí:")
+                    print("-" * 60)
+                    for ruta, valor in resultados:
+                        print(f"📍 RUTA: {ruta}")
+                        print(f"   Valor exacto: {valor}")
+                        print("-" * 60)
+                    
+                    print("\n👇 COPIA LA 'RUTA' Y DÁMELA PARA HACER TU SCRIPT FINAL.")
+                else:
+                    print("\n❌ SimHub no nos ha dado ese número en su API pública.")
+                    print("   Intenta buscar otro valor (ej. las RPM) para ver si conecta.")
+                    
     except ValueError:
-        print("❌ Por favor, introduce un número válido.")
-        return
-
-    print(f"\n🔍 Buscando el valor {target_val} (+/- 0.1) en la memoria...")
-
-    # Lista de mapas donde SimHub suele escribir
-    mapas = ["$rFactor2Shared$", "$rFactor2SMMP_Telemetry$", "Local\\$rFactor2Shared$"]
-    
-    encontrado_algo = False
-
-    for nombre_mapa in mapas:
-        try:
-            shmem = mmap.mmap(-1, 64000, nombre_mapa, access=mmap.ACCESS_READ)
-            shmem.seek(0)
-            data = shmem.read(64000) # Leemos todo el bloque de golpe
-            
-            print(f"   📂 Analizando mapa: {nombre_mapa}...")
-            
-            # Escaneamos byte a byte (esto es fuerza bruta)
-            # El combustible es un 'double' (8 bytes) o 'float' (4 bytes)
-            
-            for i in range(0, 500, 4): # Buscamos solo en los primeros 500 bytes para no tardar
-                try:
-                    # Prueba 1: ¿Es un Double (8 bytes)? (Formato standard rFactor2)
-                    val_double = struct.unpack('d', data[i:i+8])[0]
-                    if abs(val_double - target_val) < 0.1: # Margen de error pequeño
-                        print(f"\n✅ ¡EUREKA! Encontrado (Double) en offset {i}")
-                        print(f"   -> Mapa: {nombre_mapa}")
-                        print(f"   -> Valor en memoria: {val_double:.4f}")
-                        print(f"   -> SOLUCIÓN: En tu script, cambia el offset de Fuel a {i}")
-                        encontrado_algo = True
-                        
-                    # Prueba 2: ¿Es un Float (4 bytes)? (Formato antiguo o UDP convertido)
-                    val_float = struct.unpack('f', data[i:i+4])[0]
-                    if abs(val_float - target_val) < 0.1:
-                        print(f"\n✅ ¡EUREKA! Encontrado (Float) en offset {i}")
-                        print(f"   -> Mapa: {nombre_mapa}")
-                        print(f"   -> Valor en memoria: {val_float:.4f}")
-                        print(f"   -> SOLUCIÓN: Es un float en offset {i}")
-                        encontrado_algo = True
-                        
-                except:
-                    pass
-            
-            shmem.close()
-            
-        except FileNotFoundError:
-            pass
-
-    if not encontrado_algo:
-        print("\n❌ No se encontró el valor.")
-        print("   1. Asegúrate de poner el número EXACTO (con decimales).")
-        print("   2. Asegúrate de ejecutar este script como ADMINISTRADOR.")
-        print("   3. Si SimHub ve 92.8, prueba a buscar 92.0 o 93.0 por si redondea.")
+        print("❌ Error: Introduce un número válido (usa punto para decimales).")
+    except Exception as e:
+        print(f"❌ Error conectando a SimHub: {e}")
 
 if __name__ == "__main__":
-    buscar_aguja_en_pajar()
+    main()
