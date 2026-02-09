@@ -1,0 +1,49 @@
+import mmap
+import struct
+import time
+import os
+
+def hex_dump():
+    print("--- DIAGNÓSTICO DE MEMORIA LMU ---")
+    try:
+        # Abrimos la memoria compartida
+        shmem = mmap.mmap(-1, 64000, "$rFactor2Shared$")
+        print("✅ CONEXIÓN: La memoria compartida existe (SimHub o el juego la crearon).")
+    except FileNotFoundError:
+        print("❌ ERROR: No existe la memoria compartida.")
+        print("   -> Asegúrate de que el juego está abierto y el plugin instalado.")
+        return
+
+    print("👀 Monitorizando los primeros 100 bytes... (Sal a pista y acelera)")
+    print("   Si todo sigue siendo 0, el plugin del juego NO está funcionando.\n")
+
+    try:
+        while True:
+            shmem.seek(0)
+            data = shmem.read(120)
+            
+            # Decodificamos algunos valores asumiendo las dos posibles alineaciones
+            # Pack 4 (Estándar plugin) vs Pack 8 (Python default)
+            
+            # Leemos como si fuera Pack 4
+            # mID(4b) + mDelta(8b) + mRPM(8b) -> RPM está en offset 12
+            rpm_pack4 = struct.unpack('d', data[12:20])[0]
+            
+            # Leemos como si fuera Pack 8
+            # mID(4b) + pad(4b) + mDelta(8b) + mRPM(8b) -> RPM está en offset 20
+            rpm_pack8 = struct.unpack('d', data[20:28])[0]
+            
+            fuel_pack4 = struct.unpack('d', data[84:92])[0]
+            
+            # Comprobamos si hay CUALQUIER dato no-cero en el bloque
+            hay_datos = any(b != 0 for b in data)
+            estado = "🟢 DATOS RECIBIDOS" if hay_datos else "🔴 TODO CEROS (Silencio total)"
+
+            print(f"\r[{estado}] RPM(v1): {rpm_pack4:8.1f} | RPM(v2): {rpm_pack8:8.1f} | Fuel: {fuel_pack4:.2f}", end="")
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("\nDiagnóstico finalizado.")
+
+if __name__ == "__main__":
+    hex_dump()
