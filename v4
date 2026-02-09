@@ -1,0 +1,45 @@
+import urllib.request
+import json
+import time
+
+URL = "http://127.0.0.1:8888/api/getgamedata"
+
+def buscar_datos_ocultos():
+    print(f"--- DETECTIVE DE DATOS SIMHUB ---")
+    print(f"Leyendo {URL}...")
+    print("ACELERA EL COCHE para que los valores cambien.")
+
+    try:
+        with urllib.request.urlopen(URL, timeout=1) as response:
+            if response.getcode() == 200:
+                raw_json = response.read().decode()
+                data = json.loads(raw_json)
+                
+                print("\n✅ CONEXIÓN EXITOSA. Buscando datos válidos...\n")
+                
+                encontrados = 0
+                print("-" * 60)
+                print(f"{'NOMBRE DE LA VARIABLE':<30} | {'VALOR':<20}")
+                print("-" * 60)
+                
+                # Recorremos TODAS las variables que nos da SimHub
+                for key, value in data.items():
+                    # Filtramos solo números que sean mayores que 0 (para quitar basura)
+                    if isinstance(value, (int, float)) and value > 0:
+                        # Filtros para no llenar la pantalla de cosas irrelevantes
+                        if "Time" not in key and "Date" not in key:
+                            print(f"{key:<30} | {value}")
+                            encontrados += 1
+                
+                print("-" * 60)
+                if encontrados == 0:
+                    print("❌ INCREÍBLE: SimHub dice que todo es 0. ¿Seguro que las agujas se mueven?")
+                else:
+                    print(f"💡 Encontrados {encontrados} datos. Busca 'Fuel' o 'Rpms' arriba.")
+                    print("Usa el nombre EXACTO que ves a la izquierda en tu script final.")
+
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+
+if __name__ == "__main__":
+    buscar_datos_ocultos()
