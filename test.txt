@@ -1,0 +1,24 @@
+import time
+# Asumo que tienes un archivo llamado shared_memory.py o similar
+# Si tu script se llama fuel_monitor.py, intenta importar su librería de memoria
+try:
+    from shared_memory import SimInfo
+except ImportError:
+    print("No encuentro la librería de memoria. Asegúrate de estar en la carpeta correcta.")
+    exit()
+
+def test_raw_data():
+    sim_info = SimInfo()
+    print("Buscando datos de Le Mans Ultimate...")
+    
+    while True:
+        # Intentamos leer la física directamente
+        phys = sim_info.physics
+        fuel = phys.mFuel
+        rpm = phys.mEngineRPM
+        
+        print(f"RPM: {rpm} | Gasolina: {fuel:.2f} L")
+        time.sleep(1)
+
+if __name__ == "__main__":
+    test_raw_data()
