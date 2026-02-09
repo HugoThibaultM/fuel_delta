@@ -1,270 +1,53 @@
-"""
-Le Mans Ultimate - Monitor de Combustible (Versión Definitiva)
-Se conecta automáticamente a cualquier mapa de memoria activo (SimHub, LMU nativo, rF2)
-y muestra los datos sin filtros para asegurar que lees lo que hay.
-"""
-
-import mmap
-import ctypes
+import requests
 import time
-from dataclasses import dataclass
-from typing import Optional
-from config import Config
-from calculator import FuelCalculator
-from display import Display
+import json
 
-# ==========================================
-# 1. DEFINICIÓN DE ESTRUCTURA (MAPEO DE MEMORIA)
-# ==========================================
+# Configuración de SimHub (Por defecto es puerto 8888)
+SIMHUB_URL = "http://127.0.0.1:8888/api/getgamedata"
 
-# Estructura Standard de rFactor 2 / Le Mans Ultimate (Plugin v3.7+)
-class rF2VehicleTelemetry(ctypes.Structure):
-    _pack_ = 4
-    _fields_ = [
-        ("mID", ctypes.c_int),                  # 0
-        ("mDeltaTime", ctypes.c_double),        # 4
-        ("mEngineRPM", ctypes.c_double),        # 12
-        ("mEngineWaterTemp", ctypes.c_double),  # 20
-        ("mEngineOilTemp", ctypes.c_double),    # 28
-        ("mClutchRPM", ctypes.c_double),        # 36
-        ("mUnfilteredThrottle", ctypes.c_double), # 44
-        ("mUnfilteredBrake", ctypes.c_double),    # 52
-        ("mUnfilteredSteering", ctypes.c_double), # 60
-        ("mUnfilteredClutch", ctypes.c_double),   # 68
-        ("mSteeringArmForce", ctypes.c_double),   # 76
-        ("mFuel", ctypes.c_double),               # 84 <--- EL DATO DE COMBUSTIBLE
-        ("mEngineMaxRPM", ctypes.c_double),       # 92
-        ("mScheduledStops", ctypes.c_byte),
-        ("mOverheating", ctypes.c_byte),
-        ("mDetached", ctypes.c_byte),
-        ("mHeadlights", ctypes.c_byte),
-        ("mPadding", ctypes.c_byte * 4)           # Relleno hasta el siguiente bloque
-    ]
+def monitor_desde_simhub():
+    print(f"--- CONECTANDO CON SIMHUB (Puerto 8888) ---")
+    print("Asegúrate de que SimHub está abierto y las agujas se mueven.")
 
-# Estructura principal
-class rF2Telemetry(ctypes.Structure):
-    _fields_ = [
-        ("mVersionUpdateBegin", ctypes.c_uint),
-        ("mVersionUpdateEnd", ctypes.c_uint),
-        ("mLoadSessionBegin", ctypes.c_int),
-        ("mLoadSessionEnd", ctypes.c_int),
-        ("mNumVehicles", ctypes.c_int),
-        ("mVehicles", rF2VehicleTelemetry * 64)
-    ]
-
-# Estructura de Puntuación (Scoring) para Tiempos y Vueltas
-class rF2ScoringInfo(ctypes.Structure):
-    _pack_ = 4
-    _fields_ = [
-        ("mTrackName", ctypes.c_char * 64),
-        ("mSession", ctypes.c_int),
-        ("mCurrentET", ctypes.c_double),        # Tiempo de sesión
-        ("mEndET", ctypes.c_double),
-        ("mMaxLaps", ctypes.c_int),
-        ("mLapDist", ctypes.c_double),
-        ("mNumVehicles", ctypes.c_int),
-    ]
-
-# ==========================================
-# 2. CLASE DE DATOS
-# ==========================================
-
-@dataclass
-class TelemetryData:
-    fuel: float = 0.0
-    max_fuel: float = 100.0
-    lap: int = 0
-    total_laps: int = 0
-    session_time: float = 0.0
-    last_lap_time: float = 0.0
-    rpm: float = 0.0  # Para debug en consola
-
-# ==========================================
-# 3. CONECTOR INTELIGENTE
-# ==========================================
-
-class LeMansUltimateConnector:
-    def __init__(self):
-        self.telemetry_mem = None
-        self.scoring_mem = None
-        self.config = Config()
-        self.active_map_name = None
-        
-        # LISTA DE MAPAS A PROBAR (En orden de prioridad)
-        # SimHub a veces usa SMMP_Telemetry, el juego nativo usa Shared.
-        self.POSSIBLE_MAPS = [
-            "$rFactor2SMMP_Telemetry$",
-            "Local\\$rFactor2SMMP_Telemetry$",
-            "Global\\$rFactor2SMMP_Telemetry$",
-            "$rFactor2Shared$",
-            "Local\\$rFactor2Shared$",
-            "Global\\$rFactor2Shared$",
-            "$rFactor2Extended$",
-            "Local\\$rFactor2Extended$"
-        ]
-
-    def connect(self) -> bool:
-        """Busca activamente un mapa de memoria con datos"""
-        print("🔍 Escaneando mapas de memoria disponibles...")
-        
-        for map_name in self.POSSIBLE_MAPS:
+    try:
+        while True:
             try:
-                # Intentamos abrir solo lectura
-                mem = mmap.mmap(-1, 64000, map_name, access=mmap.ACCESS_READ)
+                # Pedimos los datos a SimHub (es una petición web local)
+                response = requests.get(SIMHUB_URL, timeout=0.5)
                 
-                # Leemos la cabecera para ver si hay ceros
-                mem.seek(0)
-                # Leemos un bloque donde debería haber datos (RPM, ID, Versión)
-                header = mem.read(64)
-                
-                # Si todos los bytes son 0, el mapa existe pero está vacío (zombie)
-                is_empty = all(b == 0 for b in header)
-                
-                if not is_empty:
-                    print(f"✅ ¡CONEXIÓN ESTABLECIDA! Fuente: {map_name}")
-                    self.telemetry_mem = mem
-                    self.active_map_name = map_name
+                if response.status_code == 200:
+                    data = response.json()
                     
-                    # Intentamos conectar el Scoring asociado
-                    self._connect_scoring(map_name)
-                    return True
+                    # SimHub nos da un diccionario gigante. Buscamos lo que necesitamos.
+                    # Nota: Los nombres de variables en SimHub suelen ser estandarizados.
+                    
+                    rpms = data.get('Rpms', 0)
+                    fuel = data.get('Fuel', 0)
+                    max_fuel = data.get('MaxFuel', 0)
+                    gear = data.get('Gear', '-')
+                    speed = data.get('SpeedKmh', 0)
+                    
+                    # Si el juego está pausado o en menú, a veces devuelve 0 o null
+                    if data.get('GameRunning'):
+                        estado = "🟢 EN PISTA"
+                    else:
+                        estado = "⏸️ PAUSA/MENÚ"
+
+                    print(f"\r{estado} | 🏎️ RPM: {rpms:.0f} | ⛽ Fuel: {fuel:.2f}/{max_fuel:.0f} L | ⚙️ Marcha: {gear}", end="")
+                
                 else:
-                    # Cerramos si está vacío y seguimos buscando
-                    mem.close()
-                    # print(f"   (Saltando {map_name}: Conectado pero vacío)")
+                    print(f"\r❌ Error SimHub: {response.status_code}", end="")
+
+            except requests.exceptions.ConnectionError:
+                print(f"\r❌ No se encuentra SimHub. ¿Está abierto?", end="")
             
-            except FileNotFoundError:
-                continue
-            except PermissionError:
-                print(f"⛔ PERMISO DENEGADO en {map_name}. ¡NECESITAS EJECUTAR COMO ADMIN!")
-                
-        print("❌ No se encontró ninguna señal de telemetría activa.")
-        return False
+            # Consultamos 10 veces por segundo (suficiente para combustible)
+            time.sleep(0.1)
 
-    def _connect_scoring(self, base_name):
-        """Intenta conectar al mapa de puntuación basado en el nombre de telemetría"""
-        # La convención suele ser NombreBase + $Scoring$
-        # Si base es ...Telemetry$, se suele cambiar a ...Scoring$
-        if "Telemetry" in base_name:
-            scoring_name = base_name.replace("Telemetry", "Scoring")
-        else:
-            scoring_name = base_name + "Scoring$" # Caso standard rFactor2Shared$Scoring$
-            
-        try:
-            self.scoring_mem = mmap.mmap(-1, 64000, scoring_name, access=mmap.ACCESS_READ)
-            print(f"   + Scoring conectado: {scoring_name}")
-        except:
-            print("   (Scoring no encontrado, se usarán estimaciones)")
-
-    def read_telemetry(self) -> Optional[TelemetryData]:
-        if not self.telemetry_mem:
-            return None
-        
-        try:
-            data = TelemetryData()
-            
-            # --- LEER TELEMETRÍA (FÍSICAS) ---
-            self.telemetry_mem.seek(0)
-            rf2_telem = rF2Telemetry.from_buffer_copy(self.telemetry_mem)
-            
-            # Asumimos que el jugador es el índice 0 (standard plugin)
-            player = rf2_telem.mVehicles[0]
-            
-            data.fuel = float(player.mFuel)
-            data.rpm = float(player.mEngineRPM)
-            data.max_fuel = 100.0 # Placeholder
-            
-            # --- LEER SCORING (TIEMPOS) ---
-            if self.scoring_mem:
-                try:
-                    self.scoring_mem.seek(0)
-                    rf2_scoring = rF2ScoringInfo.from_buffer_copy(self.scoring_mem)
-                    
-                    data.session_time = float(rf2_scoring.mCurrentET)
-                    data.total_laps = int(rf2_scoring.mMaxLaps)
-                    
-                    # Truco rápido para la vuelta actual:
-                    # Usamos el slot 0 de vehículos en scoring (offset manual seguro)
-                    # sizeof(ScoringInfo) es aprox 500 bytes.
-                    offset_veh = ctypes.sizeof(rF2ScoringInfo)
-                    self.scoring_mem.seek(offset_veh)
-                    # Leemos ID(4) + Driver(32) + Vehicle(64) + TotalLaps(2)
-                    # Nos saltamos 100 bytes para llegar a TotalLaps
-                    self.scoring_mem.seek(offset_veh + 100) 
-                    # data.lap = struct.unpack('h', self.scoring_mem.read(2))[0] 
-                    # (Comentado para evitar errores de lectura si el offset varía, 
-                    #  puedes descomentar si necesitas la vuelta exacta ya)
-                    
-                except Exception:
-                    pass
-
-            return data
-
-        except Exception as e:
-            # print(f"Error parseando: {e}")
-            return None
-
-    def disconnect(self):
-        if self.telemetry_mem: self.telemetry_mem.close()
-        if self.scoring_mem: self.scoring_mem.close()
-
-# ==========================================
-# 4. MONITOR PRINCIPAL
-# ==========================================
-
-class FuelMonitor:
-    def __init__(self):
-        self.connector = LeMansUltimateConnector()
-        self.calculator = FuelCalculator()
-        self.display = Display()
-        self.running = False
-        
-    def start(self):
-        print("--- LMU FUEL MONITOR (AUTO-DETECT) ---")
-        print("Asegúrate de que SimHub o el juego están corriendo.")
-        
-        while not self.connector.connect():
-            print("Esperando señal del juego... (Reintentando en 3s)")
-            time.sleep(3)
-        
-        self.running = True
-        self.run_loop()
-    
-    def run_loop(self):
-        print("\nMonitorizando... (Pulsa Ctrl+C para salir)")
-        try:
-            while self.running:
-                telemetry = self.connector.read_telemetry()
-                
-                if telemetry:
-                    # --- DEBUG VISUAL EN CONSOLA ---
-                    # Imprimimos siempre para que veas si llegan datos
-                    print(f"\r⛽ Fuel: {telemetry.fuel:.2f} L | RPM: {telemetry.rpm:.0f} | Time: {telemetry.session_time:.1f}   ", end="")
-                    
-                    # Actualizar lógica de cálculo
-                    self.calculator.update(
-                        current_fuel=telemetry.fuel,
-                        max_fuel=telemetry.max_fuel,
-                        current_lap=telemetry.lap,
-                        total_laps=telemetry.total_laps,
-                        last_lap_time=telemetry.last_lap_time
-                    )
-                    
-                    # Actualizar Pantalla
-                    analysis = self.calculator.get_analysis()
-                    self.display.update(telemetry, analysis)
-                
-                time.sleep(0.1) # 10Hz refresco
-                
-        except KeyboardInterrupt:
-            print("\n\nDeteniendo monitor...")
-        finally:
-            self.stop()
-    
-    def stop(self):
-        self.running = False
-        self.connector.disconnect()
+    except KeyboardInterrupt:
+        print("\nMonitor detenido.")
 
 if __name__ == "__main__":
-    monitor = FuelMonitor()
-    monitor.start()
+    # Si no tienes la librería 'requests', instálala abriendo terminal y escribiendo:
+    # pip install requests
+    monitor_desde_simhub()
