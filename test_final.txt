@@ -1,0 +1,60 @@
+import mmap
+import struct
+import time
+
+def hex_dump():
+    print("--- DIAGNÓSTICO FINAL ---")
+    
+    # Lista de posibles nombres de memoria
+    map_names = ["$rFactor2Shared$", "$rFactor2Extended$"]
+    active_shmem = None
+    active_name = ""
+
+    # 1. Intentar conectar a cualquiera de los mapas
+    for name in map_names:
+        try:
+            shmem = mmap.mmap(-1, 64000, name)
+            print(f"✅ CONECTADO a: {name}")
+            active_shmem = shmem
+            active_name = name
+            break
+        except FileNotFoundError:
+            continue
+
+    if not active_shmem:
+        print("❌ ERROR CRÍTICO: No se encuentra NINGÚN mapa de memoria.")
+        print("   -> El juego NO está cargando el plugin o 'Hardware Plugins' está OFF en opciones.")
+        return
+
+    print(f"👀 Leyendo datos de {active_name}... (Acelera el coche)")
+    
+    try:
+        while True:
+            active_shmem.seek(0)
+            data = active_shmem.read(120)
+            
+            # Buscamos datos no nulos
+            is_active = any(b != 0 for b in data)
+            
+            # Intentamos leer RPM en diferentes offsets
+            # Pack 4 (Standard) -> RPM en offset 12
+            rpm_pack4 = struct.unpack('d', data[12:20])[0]
+            # Pack 8 (Python) -> RPM en offset 20
+            rpm_pack8 = struct.unpack('d', data[20:28])[0]
+            # Extended Map -> A veces desplaza todo 4 bytes más
+            rpm_ext = struct.unpack('d', data[16:24])[0]
+
+            fuel = struct.unpack('d', data[84:92])[0]
+
+            if is_active:
+                print(f"\r🟢 VIVO | RPM: {max(rpm_pack4, rpm_pack8, rpm_ext):.0f} | Fuel: {fuel:.2f} | Bytes detectados", end="")
+            else:
+                print(f"\r🔴 MUERTO | Todo ceros... (Comprueba 'Hardware Plugins' en el juego)", end="")
+            
+            time.sleep(0.1)
+
+    except KeyboardInterrupt:
+        print("\nFin.")
+
+if __name__ == "__main__":
+    hex_dump()
