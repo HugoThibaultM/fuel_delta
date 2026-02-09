@@ -1,0 +1,64 @@
+import mmap
+import struct
+import time
+
+def escanear_memoria_v2():
+    print("--- ESCÁNER DE MEMORIA V2 (MODO ADMINISTRADOR) ---")
+    
+    posibles_nombres = [
+        "Local\\$rFactor2Shared$",
+        "Global\\$rFactor2Shared$",
+        "$rFactor2Shared$",
+        "Local\\$rFactor2Extended$"
+    ]
+
+    encontrado = False
+
+    for nombre in posibles_nombres:
+        try:
+            # Intentamos abrir
+            shmem = mmap.mmap(-1, 16000, nombre, access=mmap.ACCESS_READ)
+            
+            # Leemos para ver si hay ceros o datos
+            shmem.seek(0)
+            data = shmem.read(64)
+            es_cero = all(b == 0 for b in data)
+            
+            if not es_cero:
+                print(f"✅ ¡EUREKA! Datos encontrados en: '{nombre}'")
+                print("   -> Usa este nombre exacto en tu script final.")
+                encontrado = True
+                
+                # Bucle de visualización
+                try:
+                    while True:
+                        shmem.seek(0)
+                        # Leemos un bloque donde suele estar el Fuel/RPM
+                        bloque = shmem.read(100)
+                        
+                        # Decodificamos RPM (offset aprox 12-20) y Fuel (offset aprox 84)
+                        # Nota: Esto es aproximado solo para ver que cambia
+                        rpm = struct.unpack('d', bloque[12:20])[0] # Versión Standard
+                        fuel = struct.unpack('d', bloque[84:92])[0]
+                        
+                        print(f"\r🔥 RPM: {rpm:.0f} | Fuel: {fuel:.2f}", end="")
+                        time.sleep(0.1)
+                except KeyboardInterrupt:
+                    return
+            else:
+                print(f"⚠️  Conectado a '{nombre}' pero está VACÍO (Ceros).")
+                shmem.close()
+
+        except FileNotFoundError:
+            # print(f"   No existe: {nombre}")
+            pass
+        except PermissionError:
+            print(f"⛔ PERMISO DENEGADO en '{nombre}'. ¡Ejecuta Python como Administrador!")
+
+    if not encontrado:
+        print("\n❌ RESUMEN: O no hay permisos, o SimHub está bloqueando el archivo.")
+        print("   Intento 1: Cierra SimHub y prueba solo con el juego.")
+        print("   Intento 2: Ejecuta VS Code como ADMINISTRADOR.")
+
+if __name__ == "__main__":
+    escanear_memoria_v2()
