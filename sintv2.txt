@@ -1,72 +1,60 @@
-import mmap
-import struct
-import time
+"""
+Le Mans Ultimate - Monitor de Combustible (Versión Auto-Detect)
+Monitoriza el consumo conectándose automáticamente al mapa de memoria activo (SimHub/LMU/rF2)
+"""
 
-def escanner_total():
-    print("--- BUSCADOR DE SEÑAL LMU ---")
-    
-    # LISTA COMPLETA de todos los nombres posibles que usa el plugin en 2024/2025
-    posibles_nombres = [
-        "$rFactor2SMMP_Telemetry$",   # <--- La más probable en versiones nuevas
-        "$rFactor2SMMP_Scoring$",
-        "$rFactor2Shared$",           # La clásica
-        "$rFactor2Extended$",
-        "Local\\$rFactor2SMMP_Telemetry$",
-        "Global\\$rFactor2SMMP_Telemetry$",
-        "Local\\$rFactor2Shared$",
-        "Global\\$rFactor2Shared$"
+import mmap
+import ctypes
+import time
+import struct
+from dataclasses import dataclass
+from typing import Optional
+from config import Config
+from calculator import FuelCalculator
+from display import Display
+
+# ==========================================
+# ESTRUCTURAS DE DATOS (Mapeo de Memoria)
+# ==========================================
+
+# Estructura de Telemetría Standard (rFactor 2 / LMU)
+class rF2VehicleTelemetry(ctypes.Structure):
+    _pack_ = 4
+    _fields_ = [
+        ("mID", ctypes.c_int),                  # 0
+        ("mDeltaTime", ctypes.c_double),        # 4
+        ("mEngineRPM", ctypes.c_double),        # 12
+        ("mEngineWaterTemp", ctypes.c_double),  # 20
+        ("mEngineOilTemp", ctypes.c_double),    # 28
+        ("mClutchRPM", ctypes.c_double),        # 36
+        ("mUnfilteredThrottle", ctypes.c_double), # 44
+        ("mUnfilteredBrake", ctypes.c_double),    # 52
+        ("mUnfilteredSteering", ctypes.c_double), # 60
+        ("mUnfilteredClutch", ctypes.c_double),   # 68
+        ("mSteeringArmForce", ctypes.c_double),   # 76
+        ("mFuel", ctypes.c_double),               # 84 <--- DATO CLAVE
+        ("mEngineMaxRPM", ctypes.c_double),       # 92
+        ("mScheduledStops", ctypes.c_byte),
+        ("mOverheating", ctypes.c_byte),
+        ("mDetached", ctypes.c_byte),
+        ("mHeadlights", ctypes.c_byte),
+        ("mPadding", ctypes.c_byte * 4)
     ]
 
-    mapas_vivos = []
+class rF2Telemetry(ctypes.Structure):
+    _fields_ = [
+        ("mVersionUpdateBegin", ctypes.c_uint),
+        ("mVersionUpdateEnd", ctypes.c_uint),
+        ("mLoadSessionBegin", ctypes.c_int),
+        ("mLoadSessionEnd", ctypes.c_int),
+        ("mNumVehicles", ctypes.c_int),
+        ("mVehicles", rF2VehicleTelemetry * 64)
+    ]
 
-    print("1. Buscando canales activos...")
-    for nombre in posibles_nombres:
-        try:
-            # Intentamos abrir sin crear (si falla, es que no existe)
-            shmem = mmap.mmap(-1, 16000, nombre, access=mmap.ACCESS_READ)
-            
-            # Leemos para ver si hay vida (no solo ceros)
-            shmem.seek(0)
-            data = shmem.read(100)
-            es_cero = all(b == 0 for b in data)
-            
-            if not es_cero:
-                print(f"   ✅ ¡BINGO! Datos detectados en: '{nombre}'")
-                mapas_vivos.append((nombre, shmem))
-            else:
-                # Si conecta pero está vacío, lo ignoramos (es el señuelo)
-                shmem.close()
-                print(f"   ⚠️  Encontrado '{nombre}' pero está VACÍO (Señuelo).")
-
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            print(f"   ⛔ Permiso denegado en '{nombre}' (Ejecuta como Admin)")
-
-    if not mapas_vivos:
-        print("\n❌ NO SE ENCONTRÓ NADA. Asegúrate de que SimHub sigue moviendo las agujas.")
-        return
-
-    print("\n2. Mostrando datos del canal ganador:")
-    nombre_ganador, shmem_ganadora = mapas_vivos[0]
-    
-    try:
-        while True:
-            shmem_ganadora.seek(0)
-            # Leemos un bloque grande para asegurar
-            buff = shmem_ganadora.read(64)
-            
-            # Interpretación rápida (intentamos adivinar RPM y Fuel en varios offsets)
-            # Offset 0 suele ser ID, Offset 4 o 8 suele ser RPM/Velocidad dependiendo de la versión
-            
-            # Mostramos los bytes crudos para confirmar visualmente
-            hex_data = buff[:16].hex()
-            
-            print(f"\r📡 [{nombre_ganador}] HEX: {hex_data} ...", end="")
-            time.sleep(0.1)
-            
-    except KeyboardInterrupt:
-        print("\nListo. Usa ese nombre en tu script final.")
-
-if __name__ == "__main__":
-    escanner_total()
+# Estructura simplificada para Scoring (Solo cabecera para tiempos)
+class rF2ScoringInfo(ctypes.Structure):
+    _pack_ = 4
+    _fields_ = [
+        ("mTrackName", ctypes.c_char * 64),
+        ("mSession", ctypes.c_int),
+        ("m
