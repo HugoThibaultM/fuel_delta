@@ -1,0 +1,61 @@
+import ctypes
+import mmap
+import time
+
+# Estructuras de datos básicas para mapear la memoria
+class rF2Vec3(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double), ("z", ctypes.c_double)]
+
+class rF2Telem(ctypes.Structure):
+    _fields_ = [
+        ("mVersionUpdateBegin", ctypes.c_uint),
+        ("mVersionUpdateEnd", ctypes.c_uint),
+        ("mLoadVersion", ctypes.c_int),
+        ("mVersionCheck", ctypes.c_uint),
+        ("mDeltaTime", ctypes.c_double),
+        ("mElapsedTime", ctypes.c_double),
+        ("mLapNumber", ctypes.c_int),
+        ("mLapStartET", ctypes.c_double),
+        ("mVehicleName", ctypes.c_char * 64),
+        ("mTrackName", ctypes.c_char * 64),
+        ("mPos", rF2Vec3),
+        ("mLocalVel", rF2Vec3),
+        ("mLocalAccel", rF2Vec3),
+        ("mOri", rF2Vec3),
+        ("mLocalRot", rF2Vec3),
+        ("mLocalRotAccel", rF2Vec3),
+        ("mFuel", ctypes.c_double),           # <--- AQUÍ ESTÁ LA GASOLINA
+        ("mEngineRPM", ctypes.c_double),
+        ("mWaterTemp", ctypes.c_double),
+        ("mOilTemp", ctypes.c_double),
+        ("mClutch", ctypes.c_double),
+        ("mThrottle", ctypes.c_double),
+        ("mBrake", ctypes.c_double),
+        ("mGear", ctypes.c_int),
+        ("mEngineTorque", ctypes.c_double),
+        # ... hay más campos pero estos son los vitales para consumo
+    ]
+
+class SimInfo:
+    def __init__(self):
+        self._telemetry_map = None
+        self._telemetry = None
+        self.connect()
+
+    def connect(self):
+        try:
+            # Conectamos con el nombre exacto del archivo que crea el DLL
+            self._telemetry_map = mmap.mmap(-1, ctypes.sizeof(rF2Telem), "$rFactor2SMMP_Telemetry$")
+            self._telemetry = rF2Telem.from_buffer(self._telemetry_map)
+            print("Conexión con memoria compartida establecida.")
+        except Exception as e:
+            print("Esperando conexión con el juego... (Asegúrate de estar en pista)")
+
+    @property
+    def telemetry(self):
+        return self._telemetry
+
+    def refresh(self):
+        # Método para reconectar si se pierde
+        if not self._telemetry:
+            self.connect()
