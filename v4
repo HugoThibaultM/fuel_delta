@@ -1,63 +1,122 @@
 import urllib.request
 import json
 import time
+import os
 
-# URL de SimHub
-URL = "http://127.0.0.1:8888/api/getgamedata"
+# --- CONFIGURACIÓN ---
+SIMHUB_URL = "http://127.0.0.1:8888/api/getgamedata"
+CAPACIDAD_DEPOSITO = 100.0  # Ajusta esto según el coche (Hypercar ~100L, LMP2 ~75L)
 
-def rastrear_valor_profundo(data, objetivo, ruta_actual=""):
-    """Busca recursivamente un valor numérico dentro del JSON de SimHub"""
-    found_paths = []
-    
-    if isinstance(data, dict):
-        for k, v in data.items():
-            nuevaruta = f"{ruta_actual}.{k}" if ruta_actual else k
-            found_paths.extend(rastrear_valor_profundo(v, objetivo, nuevaruta))
-    elif isinstance(data, list):
-        for i, v in enumerate(data):
-            nuevaruta = f"{ruta_actual}[{i}]"
-            found_paths.extend(rastrear_valor_profundo(v, objetivo, nuevaruta))
-    elif isinstance(data, (int, float)):
-        # Comparamos con un margen de error pequeño (0.1)
-        if abs(data - objetivo) < 0.1:
-            found_paths.append((ruta_actual, data))
-            
-    return found_paths
+class MonitorCombustible:
+    def __init__(self):
+        self.fuel_history = []
+        self.last_fuel = 0.0
+        self.laps_completed = 0
+        self.start_fuel_lap = 0.0
+        self.consumo_medio = 0.0
+        self.vueltas_restantes = 0.0
 
-def main():
-    print("--- RASTREADOR PROFUNDO DE SIMHUB ---")
-    print("Este script preguntará a SimHub dónde tiene escondido el dato.")
-    
-    try:
-        objetivo_str = input("\nIntroduce los LITROS que ves en SimHub (ej. 92.8): ")
-        objetivo = float(objetivo_str.replace(',', '.'))
-        print(f"⏳ Preguntando a SimHub por el valor {objetivo}...")
+    def limpiar_pantalla(self):
+        os.system('cls' if os.name == 'nt' else 'clear')
+
+    def obtener_datos(self):
+        try:
+            with urllib.request.urlopen(SIMHUB_URL, timeout=0.5) as response:
+                if response.getcode() == 200:
+                    raw_data = json.loads(response.read().decode())
+                    
+                    # --- AQUÍ ESTÁ LA MAGIA ---
+                    # Usamos la ruta exacta que encontró tu rastreador
+                    new_data = raw_data.get('NewData', {})
+                    
+                    datos = {
+                        'fuel': new_data.get('Fuel', 0.0),
+                        'rpm': new_data.get('Rpms', 0),
+                        'gear': new_data.get('Gear', 'N'),
+                        'lap': new_data.get('CurrentLap', 0),
+                        'en_pista': raw_data.get('GameRunning', False)
+                    }
+                    return datos
+        except Exception:
+            return None
+        return None
+
+    def calcular_consumo(self, datos):
+        current_fuel = datos['fuel']
+        current_lap = datos['lap']
+
+        # Si cambiamos de vuelta, calculamos cuánto gastamos en la anterior
+        if current_lap > self.laps_completed:
+            if self.start_fuel_lap > 0:
+                consumo_vuelta = self.start_fuel_lap - current_fuel
+                # Filtramos consumos irreales (ej. si repostas, el consumo sale negativo)
+                if consumo_vuelta > 0.5: 
+                    self.fuel_history.append(consumo_vuelta)
+                    
+                    # Calculamos media de las últimas 5 vueltas
+                    historial_reciente = self.fuel_history[-5:]
+                    self.consumo_medio = sum(historial_reciente) / len(historial_reciente)
+
+            # Reseteamos para la nueva vuelta
+            self.laps_completed = current_lap
+            self.start_fuel_lap = current_fuel
+
+        # Si es la primera vez que leemos, guardamos referencia
+        if self.start_fuel_lap == 0 and current_fuel > 0:
+            self.start_fuel_lap = current_fuel
+            self.laps_completed = current_lap
+
+        # Calculamos vueltas restantes
+        if self.consumo_medio > 0:
+            self.vueltas_restantes = current_fuel / self.consumo_medio
+        else:
+            self.vueltas_restantes = 0
+
+    def mostrar_interfaz(self, datos):
+        self.limpiar_pantalla()
+        print("╔══════════════════════════════════════════╗")
+        print("║       MONITOR LMU (VÍA SIMHUB)           ║")
+        print("╠══════════════════════════════════════════╣")
         
-        with urllib.request.urlopen(URL, timeout=2) as response:
-            if response.getcode() == 200:
-                raw_json = response.read().decode()
-                data = json.loads(raw_json)
+        if not datos or not datos['en_pista']:
+            print("║  ⏳ ESPERANDO A SIMHUB / JUEGO...        ║")
+            print("║  (Asegúrate de estar en pista)           ║")
+        else:
+            # Barra de RPM visual
+            rpm_perc = min(1.0, datos['rpm'] / 9000) # Asumiendo 9000 max
+            bar_len = 20
+            bar_fill = int(rpm_perc * bar_len)
+            rpm_bar = "█" * bar_fill + "░" * (bar_len - bar_fill)
+
+            print(f"║ 🏎️  RPM: {datos['rpm']:.0f} [{rpm_bar}]   ║")
+            print(f"║ ⚙️  MARCHA: {datos['gear']}                        ║")
+            print("╠══════════════════════════════════════════╣")
+            print(f"║ ⛽ COMBUSTIBLE ACTUAL:  {datos['fuel']:>6.2f} L      ║")
+            print(f"║ 📉 CONSUMO ÚLT. VUELTA: {self.fuel_history[-1] if self.fuel_history else 0:>6.2f} L      ║")
+            print(f"║ 📊 CONSUMO MEDIO:       {self.consumo_medio:>6.2f} L      ║")
+            print("╠══════════════════════════════════════════╣")
+            
+            if self.vueltas_restantes > 0:
+                print(f"║ 🏁 VUELTAS RESTANTES:   {self.vueltas_restantes:>6.1f}        ║")
+            else:
+                print("║ 🏁 VUELTAS RESTANTES:   CALCULANDO...    ║")
                 
-                # Buscamos en todo el árbol de datos
-                resultados = rastrear_valor_profundo(data, objetivo)
+        print("╚══════════════════════════════════════════╝")
+        print("  Pulsa Ctrl+C para salir")
+
+    def ejecutar(self):
+        print("Iniciando monitor...")
+        try:
+            while True:
+                datos = self.obtener_datos()
+                if datos and datos['en_pista']:
+                    self.calcular_consumo(datos)
                 
-                if resultados:
-                    print("\n✅ ¡ENCONTRADO! SimHub guarda ese dato aquí:")
-                    print("-" * 60)
-                    for ruta, valor in resultados:
-                        print(f"📍 RUTA: {ruta}")
-                        print(f"   Valor exacto: {valor}")
-                        print("-" * 60)
-                    
-                    print("\n👇 COPIA LA 'RUTA' Y DÁMELA PARA HACER TU SCRIPT FINAL.")
-                else:
-                    print("\n❌ SimHub no nos ha dado ese número en su API pública.")
-                    print("   Intenta buscar otro valor (ej. las RPM) para ver si conecta.")
-                    
-    except ValueError:
-        print("❌ Error: Introduce un número válido (usa punto para decimales).")
-    except Exception as e:
-        print(f"❌ Error conectando a SimHub: {e}")
+                self.mostrar_interfaz(datos)
+                time.sleep(0.5) # Actualizamos cada medio segundo
+        except KeyboardInterrupt:
+            print("\nMonitor detenido.")
 
 if __name__ == "__main__":
-    main()
+    app = MonitorCombustible()
+    app.ejecutar()
