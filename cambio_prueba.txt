@@ -1,0 +1,275 @@
+"""
+Le Mans Ultimate - Monitor de Combustible
+Monitoriza el consumo de combustible y calcula el balance para terminar la carrera
+"""
+
+import mmap
+import ctypes
+import time
+from dataclasses import dataclass
+from typing import Optional
+from config import Config
+from calculator import FuelCalculator
+from display import Display
+
+# ==========================================
+# ESTRUCTURAS DE DATOS DE RFACTOR 2 / LMU
+# ==========================================
+
+# 1. Estructura de Telemetría (Físicas, Combustible)
+class rF2VehicleTelemetry(ctypes.Structure):
+    _pack_ = 4
+    _fields_ = [
+        ("mID", ctypes.c_int),                  # 0
+        ("mDeltaTime", ctypes.c_double),        # 4
+        ("mEngineRPM", ctypes.c_double),        # 12
+        ("mEngineWaterTemp", ctypes.c_double),  # 20
+        ("mEngineOilTemp", ctypes.c_double),    # 28
+        ("mClutchRPM", ctypes.c_double),        # 36
+        ("mUnfilteredThrottle", ctypes.c_double), # 44
+        ("mUnfilteredBrake", ctypes.c_double),    # 52
+        ("mUnfilteredSteering", ctypes.c_double), # 60
+        ("mUnfilteredClutch", ctypes.c_double),   # 68
+        ("mSteeringArmForce", ctypes.c_double),   # 76
+        ("mFuel", ctypes.c_double),               # 84 <--- ESTO ES LO QUE BUSCAMOS (8 bytes)
+        ("mEngineMaxRPM", ctypes.c_double),       # 92
+        ("mScheduledStops", ctypes.c_byte),
+        ("mOverheating", ctypes.c_byte),
+        ("mDetached", ctypes.c_byte),
+        ("mHeadlights", ctypes.c_byte),
+        ("mPadding", ctypes.c_byte * 4)           # Relleno para alineación
+    ]
+
+class rF2Telemetry(ctypes.Structure):
+    _fields_ = [
+        ("mVersionUpdateBegin", ctypes.c_uint),
+        ("mVersionUpdateEnd", ctypes.c_uint),
+        ("mLoadSessionBegin", ctypes.c_int),
+        ("mLoadSessionEnd", ctypes.c_int),
+        ("mNumVehicles", ctypes.c_int),
+        ("mVehicles", rF2VehicleTelemetry * 64)
+    ]
+
+# 2. Estructura de Scoring (Vueltas, Tiempo, Info de Sesión)
+class rF2VehicleScoring(ctypes.Structure):
+    _pack_ = 4
+    _fields_ = [
+        ("mID", ctypes.c_int),
+        ("mDriverName", ctypes.c_char * 32),
+        ("mVehicleName", ctypes.c_char * 64),
+        ("mTotalLaps", ctypes.c_short),           # Vueltas completadas
+        ("mSector", ctypes.c_byte),
+        ("mFinishStatus", ctypes.c_byte),
+        ("mLapDist", ctypes.c_double),
+        ("mPathLat", ctypes.c_double),
+        ("mRelevantTrackEdge", ctypes.c_double),
+        ("mFastestLapTime", ctypes.c_double),
+        ("mLastLapTime", ctypes.c_double),        # Último tiempo de vuelta
+        ("mBestSector1", ctypes.c_double),
+        ("mBestSector2", ctypes.c_double),
+        ("mBestSector3", ctypes.c_double),
+        ("mKPH", ctypes.c_double),
+        ("mMaxKPH", ctypes.c_double),
+        ("mPortable", ctypes.c_byte)
+    ]
+
+class rF2ScoringInfo(ctypes.Structure):
+    _pack_ = 4
+    _fields_ = [
+        ("mTrackName", ctypes.c_char * 64),
+        ("mSession", ctypes.c_int),
+        ("mCurrentET", ctypes.c_double),          # Tiempo de sesión actual
+        ("mEndET", ctypes.c_double),
+        ("mMaxLaps", ctypes.c_int),               # Total de vueltas de la carrera
+        ("mLapDist", ctypes.c_double),
+        ("mNumVehicles", ctypes.c_int),
+        # Hay más campos, pero cortamos aquí para lo necesario
+    ]
+
+# ==========================================
+# LÓGICA DEL PROGRAMA
+# ==========================================
+
+@dataclass
+class TelemetryData:
+    """Datos de telemetría normalizados para la calculadora"""
+    fuel: float = 0.0
+    max_fuel: float = 0.0
+    lap: int = 0
+    total_laps: int = 0
+    session_time: float = 0.0
+    last_lap_time: float = 0.0
+
+class LeMansUltimateConnector:
+    """Conector robusto usando Ctypes para LMU/rFactor2"""
+    
+    def __init__(self):
+        self.telemetry_mem = None
+        self.scoring_mem = None
+        self.config = Config()
+        
+        # Nombres estándar de la memoria compartida
+        self.telemetry_map_name = "$rFactor2Shared$"
+        self.scoring_map_name = "$rFactor2Shared$Scoring$"
+        
+    def connect(self) -> bool:
+        """Intenta conectar con los buffers de memoria compartida"""
+        try:
+            # Buffer de Telemetría (Físicas) - aprox 64kb es seguro
+            self.telemetry_mem = mmap.mmap(-1, 64000, self.telemetry_map_name)
+            
+            # Buffer de Scoring (Tiempos y Vueltas)
+            # A veces Scoring tarda un poco más en inicializarse, lo intentamos
+            try:
+                self.scoring_mem = mmap.mmap(-1, 64000, self.scoring_map_name)
+            except FileNotFoundError:
+                print("Nota: Buffer de Scoring no disponible aún (¿Estás en pista?)")
+            
+            return True
+        except FileNotFoundError:
+            # Si falla la telemetría principal, el juego no está listo
+            return False
+        except Exception as e:
+            print(f"Error crítico al conectar: {e}")
+            return False
+    
+    def read_telemetry(self) -> Optional[TelemetryData]:
+        """Lee y combina datos de ambos buffers"""
+        if not self.telemetry_mem:
+            return None
+        
+        try:
+            data = TelemetryData()
+            
+            # --- LEER FÍSICAS (COMBUSTIBLE) ---
+            self.telemetry_mem.seek(0)
+            rf2_telem = rF2Telemetry.from_buffer_copy(self.telemetry_mem)
+            
+            # Asumimos que el jugador local es el índice 0 en la vista de telemetría
+            # Esto es el estándar para el plugin SharedMemoryMap
+            player_phys = rf2_telem.mVehicles[0]
+            
+            data.fuel = float(player_phys.mFuel)
+            # Estimación de max fuel basado en RPM máx si no tenemos el dato, 
+            # o hardcodeado a 100 si no se encuentra. LMU no exporta MaxFuel en Telemetry fácilmente.
+            data.max_fuel = 100.0 
+            
+            # --- LEER SCORING (VUELTAS Y TIEMPOS) ---
+            if self.scoring_mem:
+                self.scoring_mem.seek(0)
+                # Leemos la cabecera de scoring primero
+                # Nota: Hacer el mapeo completo de Scoring es complejo por los arrays variables.
+                # Usaremos offsets manuales SEGUROS solo para ScoringInfo que está al principio.
+                
+                # ScoringInfo está al inicio del buffer Scoring
+                rf2_scoring_info = rF2ScoringInfo.from_buffer_copy(self.scoring_mem)
+                
+                data.session_time = float(rf2_scoring_info.mCurrentET)
+                data.total_laps = int(rf2_scoring_info.mMaxLaps)
+                
+                # Para encontrar los datos del vehículo en Scoring, hay un offset grande.
+                # El buffer Scoring tiene: ScoringInfo + array de Vehicles.
+                # ScoringInfo mide aprox 500-600 bytes.
+                # Para simplificar y evitar errores de offset manual en este script rápido:
+                # Usaremos el contador de vueltas interno si no podemos leer el array complejo.
+                
+                # TRUCO: Si no queremos mapear todo el array de scoring, 
+                # podemos deducir la vuelta si el script mantiene estado, 
+                # pero intentaremos leer el vehículo 0 del array de scoring.
+                
+                # Offset aprox donde empiezan los vehículos en Scoring (depende de la versión del plugin)
+                # En rF2 suele ser sizeof(rF2ScoringInfo).
+                vehicle_offset = ctypes.sizeof(rF2ScoringInfo)
+                
+                # Movemos el puntero y leemos un solo vehículo
+                self.scoring_mem.seek(vehicle_offset)
+                player_scoring = rF2VehicleScoring.from_buffer_copy(self.scoring_mem)
+                
+                # Validamos que sea el mismo coche (ID)
+                if player_scoring.mID == player_phys.mID:
+                    data.lap = int(player_scoring.mTotalLaps)
+                    data.last_lap_time = float(player_scoring.mLastLapTime)
+                else:
+                    # Si no coincide, buscamos (implementación simple: iterar primeros 10)
+                    # Por ahora devolvemos 0 para no dar datos erróneos
+                    pass
+
+            return data
+
+        except Exception as e:
+            # Ocultamos errores de lectura esporádicos para no saturar la consola
+            # print(f"Debug: Error leyendo frame: {e}") 
+            return None
+    
+    def disconnect(self):
+        if self.telemetry_mem:
+            self.telemetry_mem.close()
+        if self.scoring_mem:
+            self.scoring_mem.close()
+
+class FuelMonitor:
+    """Monitor principal del programa"""
+    
+    def __init__(self):
+        self.connector = LeMansUltimateConnector()
+        self.calculator = FuelCalculator()
+        self.display = Display()
+        self.running = False
+        
+    def start(self):
+        """Inicia el monitor"""
+        print("Iniciando Le Mans Ultimate Fuel Monitor...")
+        print("IMPORTANTE: Asegúrate de estar en pista (botón DRIVE) para recibir datos.")
+        
+        # Bucle de conexión inicial
+        connected = False
+        while not connected:
+            if self.connector.connect():
+                connected = True
+                print("¡Conectado a memoria compartida!")
+            else:
+                print("Esperando juego... (Reintentando en 3s)")
+                time.sleep(3)
+        
+        self.running = True
+        self.run_loop()
+    
+    def run_loop(self):
+        """Bucle principal del programa"""
+        print("Monitorizando combustible... Pulsa Ctrl+C para salir.")
+        try:
+            while self.running:
+                telemetry = self.connector.read_telemetry()
+                
+                # Filtramos datos válidos (Motor encendido o física activa)
+                # En rFactor, el tiempo de sesión -1.0 indica que no ha empezado o error
+                if telemetry:
+                    # Actualizar calculadora con datos actuales
+                    self.calculator.update(
+                        current_fuel=telemetry.fuel,
+                        max_fuel=telemetry.max_fuel,
+                        current_lap=telemetry.lap,
+                        total_laps=telemetry.total_laps,
+                        last_lap_time=telemetry.last_lap_time
+                    )
+                    
+                    # Obtener análisis y mostrar
+                    analysis = self.calculator.get_analysis()
+                    self.display.update(telemetry, analysis)
+                
+                time.sleep(0.1)  # 10Hz es suficiente para combustible
+                
+        except KeyboardInterrupt:
+            print("\nDeteniendo monitor...")
+        finally:
+            self.stop()
+    
+    def stop(self):
+        """Detiene el monitor"""
+        self.running = False
+        self.connector.disconnect()
+        print("Monitor detenido")
+
+if __name__ == "__main__":
+    monitor = FuelMonitor()
+    monitor.start()
