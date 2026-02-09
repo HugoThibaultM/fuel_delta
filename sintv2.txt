@@ -1,4 +1,4 @@
-"""
+ """
 Le Mans Ultimate - Monitor de Combustible (Versión Auto-Detect)
 Monitoriza el consumo conectándose automáticamente al mapa de memoria activo (SimHub/LMU/rF2)
 """
@@ -57,4 +57,181 @@ class rF2ScoringInfo(ctypes.Structure):
     _fields_ = [
         ("mTrackName", ctypes.c_char * 64),
         ("mSession", ctypes.c_int),
-        ("m
+        ("mCurrentET", ctypes.c_double),          # Tiempo de sesión
+        ("mEndET", ctypes.c_double),
+        ("mMaxLaps", ctypes.c_int),
+        ("mLapDist", ctypes.c_double),
+        ("mNumVehicles", ctypes.c_int),
+    ]
+
+@dataclass
+class TelemetryData:
+    fuel: float = 0.0
+    max_fuel: float = 100.0
+    lap: int = 0
+    total_laps: int = 0
+    session_time: float = 0.0
+    last_lap_time: float = 0.0
+    rpm: float = 0.0  # Añadido para debug
+
+class LeMansUltimateConnector:
+    """Conector inteligente que busca el mapa de memoria activo"""
+    
+    def __init__(self):
+        self.telemetry_mem = None
+        self.scoring_mem = None
+        self.active_map_name = None
+        self.config = Config()
+        
+        # Lista de posibles nombres donde SimHub o el juego pueden escribir
+        self.POSSIBLE_MAPS = [
+            "$rFactor2SMMP_Telemetry$",      # SimHub moderno
+            "Local\\$rFactor2SMMP_Telemetry$",
+            "$rFactor2Shared$",              # Standard
+            "Local\\$rFactor2Shared$",       # Windows Local
+            "Global\\$rFactor2Shared$",      # Windows Global (Admin)
+            "$rFactor2Extended$",            # Plugin Extendido
+            "Local\\$rFactor2Extended$"
+        ]
+        
+    def connect(self) -> bool:
+        """Busca y conecta al primer mapa de memoria que tenga datos"""
+        print("🔍 Buscando señal de Le Mans Ultimate...")
+        
+        for map_name in self.POSSIBLE_MAPS:
+            try:
+                # Intentamos abrir el mapa
+                mem = mmap.mmap(-1, 64000, map_name, access=mmap.ACCESS_READ)
+                
+                # Verificamos si tiene datos (no es todo ceros)
+                mem.seek(0)
+                check_data = mem.read(128)
+                if any(b != 0 for b in check_data):
+                    print(f"✅ ¡CONECTADO! Fuente de datos encontrada en: {map_name}")
+                    self.telemetry_mem = mem
+                    self.active_map_name = map_name
+                    
+                    # Intentamos conectar también al Scoring asociado
+                    # Normalmente se llama igual + $Scoring$
+                    scoring_name = map_name.replace("Telemetry", "Scoring")
+                    if "Scoring" not in scoring_name:
+                        scoring_name += "$Scoring$"
+                    
+                    try:
+                        self.scoring_mem = mmap.mmap(-1, 64000, scoring_name, access=mmap.ACCESS_READ)
+                        print(f"   + Scoring conectado ({scoring_name})")
+                    except:
+                        print("   (Scoring no disponible, usaremos estimaciones)")
+                    
+                    return True
+                else:
+                    mem.close() # Abrimos pero estaba vacío
+                    
+            except FileNotFoundError:
+                continue
+            except PermissionError:
+                print(f"⛔ PERMISO DENEGADO en {map_name}. ¡Ejecuta como Administrador!")
+
+        print("❌ No se encontró ninguna señal activa. Asegúrate de estar en pista.")
+        return False
+    
+    def read_telemetry(self) -> Optional[TelemetryData]:
+        if not self.telemetry_mem:
+            return None
+        
+        try:
+            data = TelemetryData()
+            
+            # --- LEER TELEMETRÍA ---
+            self.telemetry_mem.seek(0)
+            rf2_telem = rF2Telemetry.from_buffer_copy(self.telemetry_mem)
+            player = rf2_telem.mVehicles[0] # Jugador es índice 0
+            
+            data.fuel = float(player.mFuel)
+            data.rpm = float(player.mEngineRPM) # Útil para debug
+            data.max_fuel = 100.0 # Valor por defecto
+            
+            # --- LEER SCORING (Si existe) ---
+            if self.scoring_mem:
+                try:
+                    self.scoring_mem.seek(0)
+                    rf2_scoring = rF2ScoringInfo.from_buffer_copy(self.scoring_mem)
+                    data.session_time = float(rf2_scoring.mCurrentET)
+                    data.total_laps = int(rf2_scoring.mMaxLaps)
+                    
+                    # Truco para leer vuelta actual sin mapear todo el array complejo
+                    # Offset manual seguro para el primer vehículo en scoring
+                    offset_veh = ctypes.sizeof(rF2ScoringInfo)
+                    self.scoring_mem.seek(offset_veh)
+                    # Leemos solo los bytes necesarios para mTotalLaps (short) en esa posición
+                    # Estructura scoring vehicle: ID(4) + Driver(32) + Vehicle(64) + TotalLaps(2)
+                    # Offset relativo = 4 + 32 + 64 = 100 bytes aprox
+                    # Para simplificar, usamos un contador interno si esto falla
+                    
+                except:
+                    pass
+
+            return data
+
+        except Exception as e:
+            return None
+
+    def disconnect(self):
+        if self.telemetry_mem: self.telemetry_mem.close()
+        if self.scoring_mem: self.scoring_mem.close()
+
+class FuelMonitor:
+    def __init__(self):
+        self.connector = LeMansUltimateConnector()
+        self.calculator = FuelCalculator()
+        self.display = Display()
+        self.running = False
+        
+    def start(self):
+        print("--- LMU FUEL MONITOR ---")
+        print("Esperando conexión...")
+        
+        # Bucle de reintento de conexión
+        while not self.connector.connect():
+            time.sleep(2)
+        
+        self.running = True
+        self.run_loop()
+    
+    def run_loop(self):
+        print("\nMonitorizando... (Ctrl+C para salir)")
+        try:
+            while self.running:
+                telemetry = self.connector.read_telemetry()
+                
+                if telemetry:
+                    # Filtro simple: Si las RPM son 0, el juego puede estar pausado o cargando
+                    if telemetry.rpm > 10 or telemetry.fuel > 0:
+                        self.calculator.update(
+                            current_fuel=telemetry.fuel,
+                            max_fuel=telemetry.max_fuel,
+                            current_lap=telemetry.lap,
+                            total_laps=telemetry.total_laps,
+                            last_lap_time=telemetry.last_lap_time
+                        )
+                        
+                        analysis = self.calculator.get_analysis()
+                        self.display.update(telemetry, analysis)
+                    else:
+                        # Si recibimos 0s pero estamos conectados, mostramos aviso
+                        print(f"\r⏳ En Pausa/Boxes... Fuel: {telemetry.fuel:.1f}", end="")
+                
+                time.sleep(0.1)
+                
+        except KeyboardInterrupt:
+            print("\nDeteniendo...")
+        finally:
+            self.stop()
+    
+    def stop(self):
+        self.running = False
+        self.connector.disconnect()
+
+if __name__ == "__main__":
+    monitor = FuelMonitor()
+    monitor.start()
