@@ -1,0 +1,41 @@
+import urllib.request
+import json
+import time
+
+# URL de la API de SimHub
+SIMHUB_URL = "http://127.0.0.1:8888/api/getgamedata"
+
+def monitor_simhub_nativo():
+    print(f"--- CONECTANDO CON SIMHUB (Nativo) ---")
+    print("Asegúrate de que SimHub está abierto.")
+
+    while True:
+        try:
+            # Usamos urllib en lugar de requests (viene de serie en Python)
+            with urllib.request.urlopen(SIMHUB_URL, timeout=0.5) as response:
+                if response.getcode() == 200:
+                    # Leemos y decodificamos el JSON
+                    data = json.loads(response.read().decode())
+                    
+                    # Extraemos los datos
+                    rpms = data.get('Rpms', 0)
+                    fuel = data.get('Fuel', 0)
+                    max_fuel = data.get('MaxFuel', 0)
+                    gear = data.get('Gear', '-')
+                    
+                    if data.get('GameRunning'):
+                        estado = "🟢 PISTA" 
+                    else:
+                        estado = "⏸️ MENU"
+
+                    print(f"\r{estado} | RPM: {rpms:.0f} | Fuel: {fuel:.2f} L | Gear: {gear}   ", end="")
+        
+        except urllib.error.URLError:
+            print(f"\r❌ No encuentro SimHub (¿Está abierto en el puerto 8888?)", end="")
+        except Exception as e:
+            print(f"\rError: {e}", end="")
+            
+        time.sleep(0.1)
+
+if __name__ == "__main__":
+    monitor_simhub_nativo()
